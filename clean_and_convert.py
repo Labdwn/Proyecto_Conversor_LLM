@@ -13,6 +13,12 @@ FONT_CMDS = {
     'Bbb': 'mathbb',
 }
 
+# Variantes de \frac que Pandoc no siempre logra convertir a una fraccion
+# apilada real (numerador/denominador) al pasar a .docx. En vez de eso las
+# deja caer a texto plano tipo "a/2", perdiendo el formato. \frac{}{} en
+# cambio si se convierte de forma confiable, asi que las normalizamos.
+FRAC_CMDS = ('tfrac', 'dfrac', 'cfrac')
+
 def find_matching_brace(text, start):
     """start apunta justo despues de un '{'. Devuelve el indice del '}' que cierra,
     respetando llaves anidadas. Si no encuentra cierre, devuelve len(text)."""
@@ -28,10 +34,18 @@ def find_matching_brace(text, start):
         i += 1
     return len(text)  # sin cierre: se toma hasta el final (no se pierde texto)
 
+def fix_frac_commands(s):
+    """Reemplaza \\tfrac{...}{...}, \\dfrac{...}{...}, \\cfrac{...}{...} por
+    \\frac{...}{...}. Los argumentos van igual (dos grupos con llaves), asi
+    que solo hace falta cambiar el nombre del comando."""
+    return re.sub(r'\\(?:' + '|'.join(FRAC_CMDS) + r')\b', r'\\frac', s)
+
+
 def fix_font_commands(s):
     """Reemplaza \\rm{...}, \\rm ..., \\bf{...}, etc. por \\mathrm{...}, \\mathbf{...}, etc.
     Maneja llaves anidadas correctamente y comandos sin llaves (aplican hasta el
     proximo '}' que los cierre implicitamente, o hasta el final de la formula)."""
+    s = fix_frac_commands(s)
     cmd_pattern = re.compile(r'\\(' + '|'.join(FONT_CMDS.keys()) + r')\b\s*')
     out = []
     i = 0
@@ -75,6 +89,29 @@ def collapse_whitespace(inner):
     inner = re.sub(r'\s+', ' ', inner).strip()
     return inner
 
+# Reconoce el inicio de un item de lista: "- ", "* ", "+ ", "1. " o "1) ",
+# con sangria opcional adelante.
+_LIST_MARKER_RE = re.compile(r'^\s*([-*+]\s+|\d+[.)]\s+)')
+
+def ensure_blank_line_before_lists(text):
+    """El lector de Markdown de Pandoc (a diferencia del de GitHub) exige una
+    linea en blanco antes de una lista para reconocerla como tal. Si una IA
+    (Gemini, ChatGPT, etc.) escribe una lista pegada justo debajo de una
+    oracion, sin linea en blanco, Pandoc NO la trata como lista: dejan los
+    '*'/'-' como texto literal y todo termina amontonado en un solo parrafo.
+    Esta funcion inserta esa linea en blanco faltante, solo en la transicion
+    de "texto normal" a "primer item de la lista" (no entre items siguientes,
+    para no convertir una lista compacta en una lista espaciada de mas)."""
+    lines = text.split('\n')
+    out = []
+    for line in lines:
+        if _LIST_MARKER_RE.match(line):
+            prev = out[-1] if out else ''
+            if prev.strip() != '' and not _LIST_MARKER_RE.match(prev):
+                out.append('')
+        out.append(line)
+    return '\n'.join(out)
+
 def clean_math_blocks(text):
     """Procesa $$...$$, \\[...\\] y $...$ (matematica), dejando todo lo demas intacto.
     Evita procesar contenido dentro de bloques de codigo ```...``` para no romper
@@ -86,6 +123,11 @@ def clean_math_blocks(text):
         code_blocks.append(m.group(0))
         return f'\x00CODEBLOCK{len(code_blocks) - 1}\x00'
     text = re.sub(r'```.*?```', stash_code, text, flags=re.DOTALL)
+
+    # 1b) Asegurar linea en blanco antes de listas (ver docstring arriba).
+    # Va despues de proteger los bloques de codigo para no tocar contenido
+    # que solo parece una lista pero esta dentro de un ejemplo de codigo.
+    text = ensure_blank_line_before_lists(text)
 
     # 2) $$...$$ (bloques)
     def collapse_dd(m):
@@ -107,6 +149,15 @@ def clean_math_blocks(text):
         return f'${inner}$'
     text = re.sub(r'(?<!\$)\$(?!\$)([^\n\$]+?)(?<!\$)\$(?!\$)', fix_inline, text)
 
+    # 4b) \( ... \) inline (estilo alternativo a $...$, una sola linea).
+    # Antes este delimitador no se tocaba en absoluto, asi que comandos como
+    # \tfrac quedaban intactos y Pandoc los pasaba a texto plano ("a/2") en
+    # vez de una fraccion apilada real.
+    def fix_inline_paren(m):
+        inner = fix_font_commands(m.group(1))
+        return f'\\({inner}\\)'
+    text = re.sub(r'\\\(([^\n]+?)\\\)', fix_inline_paren, text)
+
     # 5) Restaurar bloques de codigo
     def restore_code(m):
         idx = int(m.group(1))
@@ -119,7 +170,8 @@ def count_math_blocks(text):
     dd = len(re.findall(r'\$\$.*?\$\$', text, flags=re.DOTALL))
     br = len(re.findall(r'\\\[.*?\\\]', text, flags=re.DOTALL))
     inline = len(re.findall(r'(?<!\$)\$(?!\$)[^\n\$]+?(?<!\$)\$(?!\$)', text))
-    return dd, br, inline
+    inline_paren = len(re.findall(r'\\\([^\n]+?\\\)', text))
+    return dd, br, inline, inline_paren
 
 def build_report(raw, cleaned, docx_path, result, path_label, docx_label):
     """Corre todos los chequeos de verificacion y arma el reporte final en
@@ -136,8 +188,8 @@ def build_report(raw, cleaned, docx_path, result, path_label, docx_label):
 
     Devuelve (texto_del_reporte, todo_ok: bool).
     """
-    dd0, br0, in0 = count_math_blocks(raw)
-    dd1, br1, in1 = count_math_blocks(cleaned)
+    dd0, br0, in0, inp0 = count_math_blocks(raw)
+    dd1, br1, in1, inp1 = count_math_blocks(cleaned)
 
     warnings = [l for l in result.stderr.splitlines() if l.startswith("[WARNING] Could not convert TeX math")]
 
@@ -147,11 +199,12 @@ def build_report(raw, cleaned, docx_path, result, path_label, docx_label):
     checks = []  # cada item: {"titulo", "ok": bool, "resumen": str, "detalle": [lineas]}
 
     # --- Chequeo 1: integridad de bloques de matematica ---
-    integridad_ok = (dd0 == dd1 and br0 == br1 and in0 == in1)
+    integridad_ok = (dd0 == dd1 and br0 == br1 and in0 == in1 and inp0 == inp1)
     detalle1 = [
-        f"Bloques $$...$$      -> originales: {dd0}   despues de limpiar: {dd1}",
-        f"Bloques \\[...\\]      -> originales: {br0}   despues de limpiar: {br1}",
-        f"Formulas $...$ inline -> originales: {in0}   despues de limpiar: {in1}",
+        f"Bloques $$...$$        -> originales: {dd0}   despues de limpiar: {dd1}",
+        f"Bloques \\[...\\]        -> originales: {br0}   despues de limpiar: {br1}",
+        f"Formulas $...$ inline   -> originales: {in0}   despues de limpiar: {in1}",
+        f"Formulas \\(...\\) inline -> originales: {inp0}   despues de limpiar: {inp1}",
     ]
     if not integridad_ok:
         detalle1.append("")
