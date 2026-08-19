@@ -410,6 +410,24 @@ function sanitize(s) {
 
 function pad2(n) { return n.toString().padStart(2, '0'); }
 
+function renderTimestamp(container) {
+  const now = new Date();
+  const fecha = `${pad2(now.getDate())}/${pad2(now.getMonth() + 1)}/${now.getFullYear()}`;
+  const hora = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const tsDiv = document.createElement('div');
+  tsDiv.id = 'timestamp';
+  tsDiv.innerHTML = '<span id="tsText">Generado: ' + fecha + '  ' + hora + '</span>' +
+    '<button id="copyTsBtn" type="button">Copiar</button>';
+  container.appendChild(tsDiv);
+  tsDiv.querySelector('#copyTsBtn').addEventListener('click', () => {
+    navigator.clipboard.writeText(fecha + '  ' + hora).then(() => {
+      const btn = tsDiv.querySelector('#copyTsBtn');
+      btn.textContent = 'Copiado';
+      setTimeout(() => { btn.textContent = 'Copiar'; }, 1500);
+    });
+  });
+}
+
 function isFilled(v) { return (v || '').trim() !== ''; }
 
 // version no cuenta para decidir si el usuario "empezo a llenar" el formulario
@@ -712,21 +730,7 @@ async function convertSingleFile() {
     link.textContent = 'Descargar ' + outName;
     resultEl.appendChild(link);
 
-    const now = new Date();
-    const fecha = `${pad2(now.getDate())}/${pad2(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const hora = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-    const tsDiv = document.createElement('div');
-    tsDiv.id = 'timestamp';
-    tsDiv.innerHTML = '<span id="tsText">Generado: ' + fecha + '  ' + hora + '</span>' +
-      '<button id="copyTsBtn" type="button">Copiar</button>';
-    resultEl.appendChild(tsDiv);
-    document.getElementById('copyTsBtn').addEventListener('click', () => {
-      navigator.clipboard.writeText(fecha + '  ' + hora).then(() => {
-        const btn = document.getElementById('copyTsBtn');
-        btn.textContent = 'Copiado';
-        setTimeout(() => { btn.textContent = 'Copiar'; }, 1500);
-      });
-    });
+    renderTimestamp(resultEl);
 
     const reportDiv = document.createElement('div');
     reportDiv.id = 'report';
@@ -772,6 +776,8 @@ async function convertBatchFiles() {
     link.className = 'download';
     link.textContent = 'Descargar lote.zip (' + data.results.length + ' archivo(s), incluye reporte.txt)';
     resultEl.appendChild(link);
+
+    renderTimestamp(resultEl);
 
     const resDiv = document.createElement('div');
     resDiv.id = 'batchResults';
