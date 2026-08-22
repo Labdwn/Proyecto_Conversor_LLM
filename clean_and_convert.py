@@ -19,6 +19,15 @@ FONT_CMDS = {
 # cambio si se convierte de forma confiable, asi que las normalizamos.
 FRAC_CMDS = ('tfrac', 'dfrac', 'cfrac')
 
+# Operadores tipo "lim" cuyo subindice (la condicion del limite, ej. y -> -inf)
+# Pandoc lo dibuja AL COSTADO cuando la formula esta en modo "texto/en linea"
+# (que es como terminan casi todas las formulas de listas numeradas, aunque
+# visualmente parezcan una ecuacion independiente), y solo lo dibuja DEBAJO
+# del operador (como en Word/Copilot) cuando esta en modo "display". Agregar
+# "\limits" fuerza el modo debajo sin importar el contexto, y no tiene efecto
+# negativo si la formula ya estaba en modo display.
+LIMIT_OPS = ('lim', 'liminf', 'limsup', 'max', 'min', 'sup', 'inf', 'det', 'gcd', 'Pr')
+
 def find_matching_brace(text, start):
     """start apunta justo despues de un '{'. Devuelve el indice del '}' que cierra,
     respetando llaves anidadas. Si no encuentra cierre, devuelve len(text)."""
@@ -41,11 +50,24 @@ def fix_frac_commands(s):
     return re.sub(r'\\(?:' + '|'.join(FRAC_CMDS) + r')\b', r'\\frac', s)
 
 
+def fix_limit_operators(s):
+    """Inserta \\limits despues de \\lim, \\max, \\min, etc. cuando les sigue
+    un subindice (ej. \\lim_{y \\to -\\infty}), para que ese subindice se
+    dibuje debajo del operador en vez de al costado (ver LIMIT_OPS arriba).
+    Si ya tiene \\limits, no se toca."""
+    pattern = re.compile(
+        r'\\(' + '|'.join(sorted(LIMIT_OPS, key=len, reverse=True)) + r')(?![A-Za-z])'
+        r'(?!\s*\\limits)(\s*)_'
+    )
+    return pattern.sub(lambda m: f'\\{m.group(1)}\\limits{m.group(2)}_', s)
+
+
 def fix_font_commands(s):
     """Reemplaza \\rm{...}, \\rm ..., \\bf{...}, etc. por \\mathrm{...}, \\mathbf{...}, etc.
     Maneja llaves anidadas correctamente y comandos sin llaves (aplican hasta el
     proximo '}' que los cierre implicitamente, o hasta el final de la formula)."""
     s = fix_frac_commands(s)
+    s = fix_limit_operators(s)
     cmd_pattern = re.compile(r'\\(' + '|'.join(FONT_CMDS.keys()) + r')\b\s*')
     out = []
     i = 0
