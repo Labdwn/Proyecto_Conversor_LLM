@@ -428,6 +428,112 @@ function renderTimestamp(container) {
   });
 }
 
+// Orden fijo en el que se pega los resultados en Excel: por IA (en este
+// orden especifico) y, dentro de cada IA, primero origen 1 y despues origen 2.
+const AI_ORDER = ['ChatGPT', 'Claude', 'Copilot', 'Grok', 'DeepSeek', 'Gemini', 'MathGPT', 'Meta'];
+
+function classifySlot(ia, num) {
+  const idx = AI_ORDER.indexOf((ia || '').trim());
+  const n = (num || '').trim();
+  if (idx === -1 || (n !== '1' && n !== '2')) return -1;
+  return idx * 2 + (n === '1' ? 0 : 1);
+}
+
+// Arma la caja "lista para Excel": una lista de nombres de archivo en el
+// orden final (AI_ORDER, origen 1 y 2 por cada IA), pensada para pegar en
+// Excel. entries es un arreglo de {ia, num, filename} de ESTE lote/archivo
+// nada mas (no acumula lotes anteriores).
+function renderExcelList(container, entries) {
+  const slots = new Array(AI_ORDER.length * 2).fill(null);
+  const sinClasificar = [];
+  entries.forEach(e => {
+    const slot = classifySlot(e.ia, e.num);
+    if (slot === -1) {
+      sinClasificar.push(e.filename);
+    } else {
+      slots[slot] = e.filename;
+    }
+  });
+
+  if (slots.every(s => s === null) && !sinClasificar.length) return;
+
+  // Detecta si ESTE lote es homogeneo (todo origen 1, todo origen 2, o mixto)
+  // para poder decirle a Kenneth exactamente como pegarlo en Excel sin que
+  // borre lo que ya tenia pegado del otro origen.
+  const numsPresentes = new Set(
+    entries.map(e => (e.num || '').trim()).filter(n => n === '1' || n === '2')
+  );
+  const soloOrigen1 = numsPresentes.size === 1 && numsPresentes.has('1');
+  const soloOrigen2 = numsPresentes.size === 1 && numsPresentes.has('2');
+
+  const wrap = document.createElement('div');
+  wrap.id = 'excelListWrap';
+  wrap.innerHTML =
+    '<h2 style="margin-top:24px;">Lista para Excel</h2>' +
+    '<div class="field">' +
+    '<label for="excelFormatSelect">Formato</label>' +
+    '<select id="excelFormatSelect">' +
+    '<option value="spaced">Con espacios (recomendado, sirve para origen 1 y origen 2)</option>' +
+    '<option value="compact">Compacta (solo lista de referencia)</option>' +
+    '</select>' +
+    '</div>' +
+    '<textarea id="excelListBox" readonly style="width:100%;box-sizing:border-box;height:220px;' +
+    'font-family:monospace;font-size:0.85rem;padding:8px;border:1px solid #ccc;border-radius:6px;"></textarea>' +
+    '<button id="copyExcelBtn" type="button">Copiar lista</button>' +
+    '<div id="excelListNote" class="note" style="margin-top:6px;"></div>';
+  container.appendChild(wrap);
+
+  const selectEl = wrap.querySelector('#excelFormatSelect');
+  const boxEl = wrap.querySelector('#excelListBox');
+  const noteEl = wrap.querySelector('#excelListNote');
+  const copyBtn = wrap.querySelector('#copyExcelBtn');
+
+  function update() {
+    let lines = (selectEl.value === 'compact')
+      ? slots.filter(s => s !== null)
+      : slots.map(s => s === null ? '' : s);
+    let text = lines.join(String.fromCharCode(10));
+    if (sinClasificar.length) {
+      text += (text ? String.fromCharCode(10, 10) : '') +
+        '(Sin clasificar - falta IA u origen valido)' + String.fromCharCode(10) +
+        sinClasificar.join(String.fromCharCode(10));
+    }
+    boxEl.value = text;
+
+    let nota;
+    if (selectEl.value === 'compact') {
+      nota = 'Solo los archivos generados en esta conversion, sin las filas vacias del otro ' +
+        'origen. Sirve como lista de referencia rapida, pero NO la uses para pegar junto con ' +
+        'el otro origen: las filas no van a quedar alineadas. Para pegar, usa "Con espacios".';
+    } else if (soloOrigen1) {
+      nota = 'Este lote es todo de origen 1. Si la hoja esta vacia (es la primera tanda que ' +
+        'pegas), pega esta lista con Ctrl+V normal: las filas vacias (son las de origen 2) ' +
+        'quedan en blanco sin problema. Si ya habias pegado antes el origen 2, en cambio, pega ' +
+        'con Pegado especial > Saltar en blanco (clic derecho > Pegado especial > tildar ' +
+        '"Saltar blancos"), para no borrar esos datos.';
+    } else if (soloOrigen2) {
+      nota = 'Este lote es todo de origen 2. Si ya pegaste antes la lista de origen 1, pega ' +
+        'esta con Pegado especial > Saltar en blanco (clic derecho > Pegado especial > tildar ' +
+        '"Saltar blancos"), asi solo se completan las filas vacias sin borrar lo que ya esta. ' +
+        'Si la hoja todavia esta vacia, un Ctrl+V normal alcanza igual.';
+    } else {
+      nota = 'Cada fila es una posicion fija: ' + AI_ORDER.join(' 1/2, ') + ' 1/2. Si la hoja ' +
+        'ya tiene datos de una conversion anterior, pega con Pegado especial > Saltar en blanco ' +
+        'para no borrarlos; si esta vacia, un Ctrl+V normal alcanza.';
+    }
+    noteEl.textContent = nota;
+  }
+
+  selectEl.addEventListener('change', update);
+  update();
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(boxEl.value).then(() => {
+      copyBtn.textContent = 'Copiado';
+      setTimeout(() => { copyBtn.textContent = 'Copiar lista'; }, 1500);
+    });
+  });
+}
+
 function isFilled(v) { return (v || '').trim() !== ''; }
 
 // version no cuenta para decidir si el usuario "empezo a llenar" el formulario
@@ -737,6 +843,10 @@ async function convertSingleFile() {
     reportDiv.textContent = data.report;
     resultEl.appendChild(reportDiv);
 
+    if (anyMetadataFilled()) {
+      renderExcelList(resultEl, [{ ia: iaSelectEl.value.trim(), num: numSelectEl.value, filename: outName }]);
+    }
+
     convertBtn.disabled = false;
   } catch (err) {
     statusEl.innerHTML = '<span class="alerta">Error de conexion: ' + err + '</span>';
@@ -788,6 +898,15 @@ async function convertBatchFiles() {
       resDiv.appendChild(row);
     });
     resultEl.appendChild(resDiv);
+
+    const entries = selectedFiles
+      .map((f, i) => {
+        const r = data.results[i];
+        if (!r || !r.ok) return null;
+        return { ia: getFieldValue(i, 'ia'), num: getFieldValue(i, 'num'), filename: r.filename };
+      })
+      .filter(Boolean);
+    renderExcelList(resultEl, entries);
 
     convertBtn.disabled = false;
   } catch (err) {

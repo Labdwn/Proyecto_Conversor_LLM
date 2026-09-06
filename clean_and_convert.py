@@ -28,6 +28,18 @@ FRAC_CMDS = ('tfrac', 'dfrac', 'cfrac')
 # negativo si la formula ya estaba en modo display.
 LIMIT_OPS = ('lim', 'liminf', 'limsup', 'max', 'min', 'sup', 'inf', 'det', 'gcd', 'Pr')
 
+# Nombres de funciones trigonometricas "a la espanola" que algunas IAs
+# (se vio con Gemini) escriben en vez del comando LaTeX real. \sen y \tg no
+# existen en LaTeX (lo correcto es \sin y \tan), asi que el parser de
+# formulas de Pandoc no los reconoce. El problema no es que se pierda solo
+# esa palabra: al no reconocer el comando, Pandoc descarta la formula
+# COMPLETA y la deja como texto/codigo LaTeX crudo sin convertir en el
+# .docx final (aparece literalmente "$$...\sen(3x)$$" en el documento).
+TRIG_CMDS = {
+    'sen': 'sin',
+    'tg': 'tan',
+}
+
 def find_matching_brace(text, start):
     """start apunta justo despues de un '{'. Devuelve el indice del '}' que cierra,
     respetando llaves anidadas. Si no encuentra cierre, devuelve len(text)."""
@@ -62,12 +74,26 @@ def fix_limit_operators(s):
     return pattern.sub(lambda m: f'\\{m.group(1)}\\limits{m.group(2)}_', s)
 
 
+def fix_trig_commands(s):
+    """Reemplaza \\sen(...) y \\tg(...) (notacion en espanol) por
+    \\sin(...) y \\tan(...), que si son comandos LaTeX reales que Pandoc
+    reconoce. A diferencia de \\rm/\\bf (FONT_CMDS), estos comandos no
+    llevan argumento entre llaves (van seguidos directo del parentesis:
+    \\sen(3x)), asi que el reemplazo es un simple cambio de nombre."""
+    return re.sub(
+        r'\\(sen|tg)(?![A-Za-z])',
+        lambda m: '\\sin' if m.group(1) == 'sen' else '\\tan',
+        s,
+    )
+
+
 def fix_font_commands(s):
     """Reemplaza \\rm{...}, \\rm ..., \\bf{...}, etc. por \\mathrm{...}, \\mathbf{...}, etc.
     Maneja llaves anidadas correctamente y comandos sin llaves (aplican hasta el
     proximo '}' que los cierre implicitamente, o hasta el final de la formula)."""
     s = fix_frac_commands(s)
     s = fix_limit_operators(s)
+    s = fix_trig_commands(s)
     cmd_pattern = re.compile(r'\\(' + '|'.join(FONT_CMDS.keys()) + r')\b\s*')
     out = []
     i = 0
