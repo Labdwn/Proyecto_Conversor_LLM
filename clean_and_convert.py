@@ -40,6 +40,16 @@ TRIG_CMDS = {
     'tg': 'tan',
 }
 
+# \vphantom{...}, \hphantom{...}, \phantom{...} son comandos de espaciado
+# invisible (ajustan la altura/ancho de una caja sin mostrar nada), muy
+# comunes cuando una IA arma un \underbrace/\overbrace "a mano". El parser
+# de formulas de Pandoc (texmath) no los soporta (bug abierto: jgm/pandoc#10787),
+# asi que al encontrarlos descarta la formula COMPLETA que los contiene y la
+# deja como texto/codigo LaTeX crudo sin convertir en el .docx final. Como
+# son puramente cosmeticos (no aportan contenido matematico), se pueden
+# eliminar sin perder nada.
+PHANTOM_CMDS = ('vphantom', 'hphantom', 'phantom')
+
 def find_matching_brace(text, start):
     """start apunta justo despues de un '{'. Devuelve el indice del '}' que cierra,
     respetando llaves anidadas. Si no encuentra cierre, devuelve len(text)."""
@@ -87,10 +97,32 @@ def fix_trig_commands(s):
     )
 
 
+def strip_phantom_commands(s):
+    """Elimina \\vphantom{...}, \\hphantom{...} y \\phantom{...} junto con su
+    argumento (con llaves anidadas, igual criterio que find_matching_brace).
+    Ver PHANTOM_CMDS arriba para el porque."""
+    pattern = re.compile(r'\\(?:' + '|'.join(PHANTOM_CMDS) + r')\b\s*')
+    out = []
+    i = 0
+    while True:
+        m = pattern.search(s, i)
+        if not m:
+            out.append(s[i:])
+            break
+        out.append(s[i:m.start()])
+        pos = m.end()
+        if pos < len(s) and s[pos] == '{':
+            i = find_matching_brace(s, pos + 1) + 1
+        else:
+            i = pos
+    return ''.join(out)
+
+
 def fix_font_commands(s):
     """Reemplaza \\rm{...}, \\rm ..., \\bf{...}, etc. por \\mathrm{...}, \\mathbf{...}, etc.
     Maneja llaves anidadas correctamente y comandos sin llaves (aplican hasta el
     proximo '}' que los cierre implicitamente, o hasta el final de la formula)."""
+    s = strip_phantom_commands(s)
     s = fix_frac_commands(s)
     s = fix_limit_operators(s)
     s = fix_trig_commands(s)
