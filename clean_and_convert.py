@@ -118,6 +118,58 @@ def strip_phantom_commands(s):
     return ''.join(out)
 
 
+# Pandoc (probado con 3.1.3) convierte \\overbrace a un objeto nativo de Word
+# (<m:groupChr>, la llave crece con el contenido), pero \\underbrace lo emite
+# mal: <m:limLow> con el caracter fijo U+23DF como "limite", que Word dibuja
+# como un ganchito chico en vez de una llave que abarque toda la expresion.
+# Por eso el LaTeX no se toca; se corrige el XML del .docx ya generado.
+UNDERBRACE_MARKER = ('<m:lim><m:r><m:rPr><m:sty m:val="p" /></m:rPr>'
+                     '<m:t>\u23df</m:t></m:r></m:lim></m:limLow>')
+_LIMLOW_TOKEN = re.compile(r'<m:limLow>|</m:limLow>')
+_GROUPCHR_BOT = ('<m:groupChr><m:groupChrPr><m:chr m:val="\u23df" />'
+                 '<m:pos m:val="bot" /><m:vertJc m:val="top" /></m:groupChrPr>'
+                 '<m:e>{}</m:e></m:groupChr>')
+
+def fix_underbrace_xml(xml):
+    """Convierte <m:limLow><m:e>X</m:e><m:lim>U+23DF</m:lim></m:limLow> en un
+    <m:groupChr> (llave inferior que se estira bajo X), igual que hace Word."""
+    while True:
+        k = xml.find(UNDERBRACE_MARKER)
+        if k == -1:
+            return xml
+        # buscar el <m:limLow> que abre este bloque (hacia atras, con anidacion)
+        depth, start = 0, None
+        for m in reversed(list(_LIMLOW_TOKEN.finditer(xml, 0, k))):
+            if m.group(0) == '</m:limLow>':
+                depth += 1
+            elif depth == 0:
+                start = m.start()
+                break
+            else:
+                depth -= 1
+        open_tag = '<m:limLow><m:e>'
+        if start is None or not xml.startswith(open_tag, start) or not xml[:k].endswith('</m:e>'):
+            return xml  # estructura inesperada: se deja tal cual
+        inner = xml[start + len(open_tag):k - len('</m:e>')]
+        end = k + len(UNDERBRACE_MARKER)
+        xml = xml[:start] + _GROUPCHR_BOT.format(inner) + xml[end:]
+
+def fix_underbrace_docx(docx_path):
+    """Reescribe word/document.xml del .docx aplicando fix_underbrace_xml."""
+    import zipfile, shutil
+    tmp_path = docx_path + '.tmp'
+    with zipfile.ZipFile(docx_path) as zin, \
+         zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == 'word/document.xml':
+                xml = data.decode('utf-8')
+                if UNDERBRACE_MARKER in xml:
+                    data = fix_underbrace_xml(xml).encode('utf-8')
+            zout.writestr(item, data)
+    shutil.move(tmp_path, docx_path)
+
+
 def fix_font_commands(s):
     """Reemplaza \\rm{...}, \\rm ..., \\bf{...}, etc. por \\mathrm{...}, \\mathbf{...}, etc.
     Maneja llaves anidadas correctamente y comandos sin llaves (aplican hasta el
@@ -540,6 +592,9 @@ def main():
         ["pandoc", "-f", "markdown+tex_math_single_backslash-raw_tex", clean_path, "-o", docx_path],
         capture_output=True, text=True, encoding="utf-8"
     )
+
+    if result.returncode == 0:
+        fix_underbrace_docx(docx_path)
 
     report, _ = build_report(raw, cleaned, docx_path, result, path_label=path, docx_label=docx_path)
 

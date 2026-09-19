@@ -51,6 +51,8 @@ def convert_text_to_docx(raw_text):
         if result.returncode != 0:
             raise RuntimeError(f"Pandoc fallo al convertir:\n{result.stderr}")
 
+        cc.fix_underbrace_docx(docx_path)  # llaves \\underbrace reales en Word
+
         # Misma logica de reporte (resumen + detalle) que usa clean_and_convert.py
         # desde la linea de comandos, para que ambas vias muestren lo mismo.
         report, _ = cc.build_report(
